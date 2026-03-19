@@ -61,6 +61,7 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  source_group?: string; // group_folder of the requesting agent (for task result callback)
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;

@@ -9,6 +9,7 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  createTask,
   getAllTasks,
   getDueTasks,
   getTaskById,
@@ -185,8 +186,13 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          if (task.source_group) {
+            // Delegated task: return result to the source agent, not the target channel
+            deliverResultToSource(task, streamedOutput.result, deps);
+          } else {
+            // User-scheduled task: forward result to user
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -236,6 +242,65 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
+}
+
+/**
+ * Deliver task result back to the source agent that delegated the task.
+ * Tries IPC input first (if source container is alive), falls back to
+ * creating a new task to wake the source agent.
+ */
+function deliverResultToSource(
+  task: ScheduledTask,
+  result: string,
+  deps: SchedulerDependencies,
+): void {
+  const groups = deps.registeredGroups();
+  const sourceGroup = Object.values(groups).find(
+    (g) => g.folder === task.source_group,
+  );
+  if (!sourceGroup) {
+    logger.warn(
+      { taskId: task.id, sourceGroup: task.source_group },
+      'Source group not found for task result callback',
+    );
+    return;
+  }
+
+  const prompt = task.prompt.length > 200
+    ? task.prompt.slice(0, 200) + '...'
+    : task.prompt;
+  const message = `[Task result: ${task.id}]\nRequest: ${prompt}\nResult: ${result}`;
+
+  // Try delivering via IPC input (source container alive)
+  const sourceJid = Object.entries(groups).find(
+    ([, g]) => g.folder === task.source_group,
+  )?.[0];
+  if (sourceJid && deps.queue.sendMessage(sourceJid, message)) {
+    logger.info(
+      { taskId: task.id, sourceGroup: task.source_group },
+      'Task result delivered to source agent via IPC',
+    );
+    return;
+  }
+
+  // Source container is dead — create a callback task to wake it
+  const callbackTaskId = `callback-${task.id}-${Date.now()}`;
+  createTask({
+    id: callbackTaskId,
+    group_folder: task.source_group!,
+    chat_jid: sourceGroup.folder,
+    prompt: message,
+    schedule_type: 'once',
+    schedule_value: new Date().toISOString(),
+    context_mode: 'group',
+    next_run: new Date().toISOString(),
+    status: 'active',
+    created_at: new Date().toISOString(),
+  });
+  logger.info(
+    { taskId: task.id, callbackTaskId, sourceGroup: task.source_group },
+    'Task result delivered via callback task (source container was dead)',
+  );
 }
 
 let schedulerRunning = false;
