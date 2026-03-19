@@ -41,6 +41,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  projectRoot?: string;
 }
 
 export interface ContainerOutput {
@@ -212,9 +213,14 @@ function buildVolumeMounts(
   return mounts;
 }
 
+function resolveEnvValue(value: string): string {
+  return value.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  groupEnv?: Record<string, string>,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -251,6 +257,13 @@ function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  // Inject group-specific environment variables with ${VAR} substitution
+  if (groupEnv) {
+    for (const [key, value] of Object.entries(groupEnv)) {
+      args.push('-e', `${key}=${resolveEnvValue(value)}`);
+    }
+  }
+
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
@@ -278,7 +291,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.containerConfig?.env);
 
   logger.debug(
     {

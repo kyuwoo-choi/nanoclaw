@@ -14,6 +14,7 @@
  *   Final marker after loop ends signals completion.
  */
 
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
@@ -27,6 +28,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  projectRoot?: string;
 }
 
 interface ContainerOutput {
@@ -373,6 +375,16 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // When projectRoot is set, cwd moves to the project directory, so the group
+  // CLAUDE.md at /workspace/group/CLAUDE.md won't be auto-loaded by Claude Code.
+  // Append it to systemPrompt so the group instructions are still applied.
+  if (containerInput.projectRoot) {
+    const groupClaudeMdPath = '/workspace/group/CLAUDE.md';
+    if (fs.existsSync(groupClaudeMdPath)) {
+      globalClaudeMd = (globalClaudeMd || '') + '\n' + fs.readFileSync(groupClaudeMdPath, 'utf-8');
+    }
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -389,10 +401,14 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const cwd = containerInput.projectRoot
+    ? `/workspace/extra/${containerInput.projectRoot}`
+    : '/workspace/group';
+
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
@@ -464,6 +480,44 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+/**
+ * Install plugins declared in the project's .claude/settings.json.
+ * Runs before the first query so Claude Code can use the plugins.
+ */
+function ensurePluginsFromSettings(cwd: string): void {
+  const settingsPath = path.join(cwd, '.claude', 'settings.json');
+  if (!fs.existsSync(settingsPath)) return;
+
+  let settings: { enabledPlugins?: Record<string, boolean> };
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+  } catch {
+    return;
+  }
+  const enabledPlugins = settings.enabledPlugins;
+  if (!enabledPlugins) return;
+
+  const installedPath = '/home/node/.claude/plugins/installed_plugins.json';
+  let installed: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(installedPath))
+      installed = JSON.parse(fs.readFileSync(installedPath, 'utf-8'));
+  } catch { /* ignore */ }
+
+  for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
+    if (!enabled) continue;
+    const pluginName = pluginId.split('@')[0];
+    if (installed[pluginId] || installed[pluginName]) continue;
+
+    log(`Installing plugin: ${pluginId}`);
+    const result = spawnSync('claude', ['plugin', 'install', pluginId], {
+      cwd, env: process.env, timeout: 60000,
+    });
+    if (result.status !== 0)
+      log(`Plugin install failed: ${pluginId} — ${result.stderr?.toString()}`);
+  }
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -487,6 +541,14 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+
+  // Determine effective cwd for plugin installation
+  const effectiveCwd = containerInput.projectRoot
+    ? `/workspace/extra/${containerInput.projectRoot}`
+    : '/workspace/group';
+
+  // Install plugins declared in the project's .claude/settings.json
+  ensurePluginsFromSettings(effectiveCwd);
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });

@@ -30,6 +30,8 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  projectRoot?: string; // additionalMounts의 containerPath 중 하나. cwd를 /workspace/extra/{projectRoot}로 전환
+  env?: Record<string, string>; // 그룹별 환경변수. 값에 ${ENV_VAR} 패턴 사용 시 호스트 환경변수로 치환
 }
 
 export interface RegisteredGroup {
