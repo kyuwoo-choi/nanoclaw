@@ -221,6 +221,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   groupEnv?: Record<string, string>,
+  image?: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -272,7 +273,7 @@ function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
+  args.push(image || CONTAINER_IMAGE);
 
   return args;
 }
@@ -291,7 +292,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.containerConfig?.env);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.containerConfig?.env, group.containerConfig?.image);
 
   logger.debug(
     {

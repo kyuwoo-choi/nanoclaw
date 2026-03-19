@@ -32,6 +32,7 @@ export interface ContainerConfig {
   timeout?: number; // Default: 300000 (5 minutes)
   projectRoot?: string; // additionalMounts의 containerPath 중 하나. cwd를 /workspace/extra/{projectRoot}로 전환
   env?: Record<string, string>; // 그룹별 환경변수. 값에 ${ENV_VAR} 패턴 사용 시 호스트 환경변수로 치환
+  image?: string; // 그룹별 컨테이너 이미지. 미지정 시 CONTAINER_IMAGE 환경변수 또는 nanoclaw-agent:latest
 }
 
 export interface RegisteredGroup {
